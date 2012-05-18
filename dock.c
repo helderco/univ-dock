@@ -5,13 +5,15 @@
 #include <time.h>
 
 #define ANCHORAGES 3
-#define WAITING_SPOTS 3
+#define WAITING_SPOTS 2
 #define DOCKING_BAY 15
 
 #define BOATS 16
 
 #define ANCHORAGE_CARGO 145
 #define BOAT_CARGO_CAPACITY 8
+
+#define MAXIMUM_SAIL_TIME 6
 
 void* thr_boat(void* ptr);
 void* thr_anchorage(void* ptr);
@@ -28,10 +30,12 @@ typedef struct {
 } boat_t;
 
 sem_t sem_dock,  // controls spots to be occupied
-      sem_crane, // loads and unloads
-      sem_boat_docked,
+      sem_enter_anchorage, // controls boat docked in anchorage
+      sem_leave_anchorage,
       sem_anchorage,
-      sem_cargo;
+      sem_crane,
+      sem_start_cargo,
+      sem_end_cargo;
 
 pthread_mutex_t mutex_dock,
                 mutex_boats;
@@ -56,20 +60,12 @@ int main(int argc, char *argv[])
     dock.is_closed = 0;
     dock.boats_at_bay = 0;
     
-    if (sem_init(&sem_dock, 0, DOCKING_BAY) != 0) {
-        perror("docking bay semaphore");
-        exit(EXIT_FAILURE);
-    }
-    
-    if (sem_init(&sem_anchorage, 0, 0) != 0) {
-        perror("anchorage semaphore");
-        exit(EXIT_FAILURE);
-    }
-    
-    if (sem_init(&sem_cargo, 0, 1) != 0) {
-        perror("cargo semaphore");
-        exit(EXIT_FAILURE);
-    }
+    sem_init(&sem_dock, 0, DOCKING_BAY);
+    sem_init(&sem_enter_anchorage, 0, WAITING_SPOTS);
+    sem_init(&sem_crane, 0, 1);
+    //sem_init(&sem_leave_anchorage, 0, 0);
+    sem_init(&sem_start_cargo, 0, 0);
+    sem_init(&sem_end_cargo, 0, 0);
     
     for (boat_i = 0; boat_i < BOATS; boat_i++) {
         boat[boat_i].id = boat_i + 1;
@@ -84,8 +80,10 @@ int main(int argc, char *argv[])
         perror("join anchorage thread");
     }
 
-    puts("                The dock is closed!");
+    pthread_mutex_lock(&mutex_dock);    
     dock.is_closed = 1;
+    puts("~~~~~~~ The dock is closed! ~~~~~~~");
+    pthread_mutex_unlock(&mutex_dock);
     
     for (boat_i = 0; boat_i < BOATS; boat_i++) {
         if (pthread_join(boat_tid[boat_i], NULL) != 0) {
@@ -99,8 +97,9 @@ int main(int argc, char *argv[])
     puts("  >>> All ships are at sea, captain!");
     
     sem_destroy(&sem_dock);
-    sem_destroy(&sem_anchorage);
-    sem_destroy(&sem_cargo);
+    sem_destroy(&sem_crane);
+    sem_destroy(&sem_start_cargo);
+    sem_destroy(&sem_end_cargo);
 
     pthread_mutex_destroy(&mutex_dock);
     pthread_mutex_destroy(&mutex_boats);
@@ -113,7 +112,7 @@ void enter_bay(int boat_id)
     pthread_mutex_lock(&mutex_dock);
     dock.boats_at_bay++;
     pthread_mutex_unlock(&mutex_dock);
-    printf("Boat %2d entered dock.\n", boat_id);
+    printf("Boat %2d entered bay.\n", boat_id);
 }
 
 void exit_bay(int boat_id)
@@ -121,12 +120,12 @@ void exit_bay(int boat_id)
     pthread_mutex_lock(&mutex_dock);
     dock.boats_at_bay--;
     pthread_mutex_unlock(&mutex_dock);
-    printf("Boat %2d exited dock.\n", boat_id);
+    printf("Boat %2d exited bay.\n", boat_id);
 }
 
 void sail(int boat_id)
 {
-    int sail_time = rand() % 6 + 1;
+    int sail_time = rand() % MAXIMUM_SAIL_TIME + 1;
     printf("Boat %2d will sail for %d secs.\n", boat_id, sail_time);
     sleep(sail_time);
 }
@@ -134,14 +133,39 @@ void sail(int boat_id)
 void *thr_boat(void *ptr)
 {
     boat_t boat = *(boat_t*) ptr;
-    int sail_time;
     
     while (!dock.is_closed) {
         if (sem_trywait(&sem_dock) == 0) {
             enter_bay(boat.id);
-            sem_post(&sem_anchorage);
-            sem_wait(&sem_cargo);
-            printf("Boat %2d is exiting dock.\n", boat.id);
+            
+            while (1) {
+                //sleep(1);
+                sleep(boat.id % WAITING_SPOTS);
+
+                if (sem_trywait(&sem_enter_anchorage) == 0) {
+                    printf("Boat %2d entered anchorage.\n", boat.id);
+
+                    sem_wait(&sem_crane);
+                    printf("Boat %2d will start loading/unloading.\n", boat.id);
+                    
+                    sem_post(&sem_start_cargo);
+                    sem_post(&sem_enter_anchorage);
+                    
+                    sem_wait(&sem_end_cargo);
+                    printf("Boat %2d finished loading/unloading.\n", boat.id);
+                    
+                    sem_post(&sem_crane);
+                    printf("Boat %2d will leave now.\n", boat.id);
+                    
+                    sem_post(&sem_dock);
+                    exit_bay(boat.id);
+
+                    break;
+                }
+                else {
+                    //sleep(1);
+                }
+            }
         }
         sail(boat.id);
     }
@@ -164,31 +188,39 @@ void *thr_boat(void *ptr)
     return NULL;
 }
 
+int boats_at_bay()
+{
+    int available_spots;
+    sem_getvalue(&sem_dock, &available_spots);
+    
+    return available_spots < DOCKING_BAY;
+}
+
 void *thr_anchorage(void *ptr)
 {
     int cargo_to_load = ANCHORAGE_CARGO;
     int cargo_unloaded = 0;
     int cargo;
     
-    sem_wait(&sem_anchorage);
+    while (1) {
+        sem_wait(&sem_start_cargo);
 
-    while (dock.boats_at_bay) {
-    
         puts(">>> Loading/Unloading boat...");
         cargo_unloaded += rand() % BOAT_CARGO_CAPACITY + 1;
-        cargo = rand() % BOAT_CARGO_CAPACITY + 1;
 
-        if (cargo_to_load - cargo <= 0) {
-            cargo = cargo_to_load;
+        if (cargo_to_load > 0) {
+            cargo_to_load -= rand() % BOAT_CARGO_CAPACITY + 1;
+            
+            if (cargo_to_load < 0) {
+                cargo_to_load = 0;
+            }
         }
-        cargo_to_load -= cargo;
         
-        sem_post(&sem_cargo);
+        sem_post(&sem_end_cargo);
         
-        if (cargo_to_load <= 0) {
+        if (cargo_to_load == 0) {
             break;
         }
-        sem_wait(&sem_anchorage);
     }
     
     printf("Unloaded %d cargo units.\n", cargo_unloaded);
