@@ -1,3 +1,18 @@
+/**
+ * Dock - Loading/Unloading Cargo
+ *
+ * This program manages a dock with some anchorages to unload and load
+ * cargo from and to many boats. It was made for an Operating Systems
+ * class, to practice the use of threads and semaphores.
+ *
+ * (C) 2012 Helder Correia
+ *
+ * THIS SOFTWARE IS PROVIDED ``AS IS'' AND WITHOUT ANY EXPRESS OR IMPLIED
+ * WARRANTIES, INCLUDING, WITHOUT LIMITATION, THE IMPLIED WARRANTIES OF
+ * MERCHANTIBILITY AND FITNESS FOR A PARTICULAR PURPOSE. THE AUTHORS AND
+ * CONTRIBUTORS ACCEPT NO RESPONSIBILITY IN ANY CONCEIVABLE MANNER.
+ */
+
 #include <stdio.h>
 #include <stdlib.h>
 #include <pthread.h>
@@ -37,7 +52,7 @@ int dock_is_closed();
 int cargo_in_boats();
 int cargo_in_anchorages();
 int enter_anchorage(int anchorage_id, boat_t *boat);
-int wait_for_crane(int anchorage_id, boat_t *boat);
+void wait_for_crane(int anchorage_id, boat_t *boat);
 void leave_crane(int anchorage_id, int boat_id);
 boat_t *boat_at_crane(int anchorage_id);
 int anchorage_is_closed(int id);
@@ -58,8 +73,8 @@ sem_t sem_start_cargo[ANCHORAGES];
 /* Semaphore to control when unloading/loading cargo ends. */
 sem_t sem_end_cargo[ANCHORAGES];
 
-/* Mutex for global variables. */
-pthread_mutex_t mutex;
+/* Mutex for controlling the movement cargo. */
+pthread_mutex_t mutex_cargo;
 
 /* Mutex for controlling which boat is docked in an anchorage (crane). */
 pthread_mutex_t mutex_docked_boat;
@@ -79,7 +94,7 @@ int main(int argc, char **argv)
 
     srand(time(NULL));
 
-    pthread_mutex_init(&mutex, NULL);
+    pthread_mutex_init(&mutex_cargo, NULL);
     pthread_mutex_init(&mutex_docked_boat, NULL);
     
     sem_init(&sem_dock, 0, DOCKING_BAY);
@@ -142,7 +157,7 @@ int main(int argc, char **argv)
     printf("\nTotal unloaded cargo: %d units\n", total_cargo);
     
     sem_destroy(&sem_dock);
-    pthread_mutex_destroy(&mutex);
+    pthread_mutex_destroy(&mutex_cargo);
     pthread_mutex_destroy(&mutex_docked_boat);
     
     exit(EXIT_SUCCESS);
@@ -158,41 +173,42 @@ void *thr_anchorage(void *ptr)
 
     int id = anchorage->id;
 
-    sem_wait(&sem_start_cargo[id]);
-    
-    // the while condition is run after each wait on start_cargo
     while (!anchorage_is_closed(id)) {
+
+        // wait for next boat to be ready for moving cargo
+        sem_wait(&sem_start_cargo[id]);
         
         // which boat is at the crane right now?
         boat = boat_at_crane(id);
         
+        // this should only happen when all boats have returned and this
+        // anchorage is unblocked from the a waiting state
         if (boat == NULL) {
-            printf(" ???  [A%d] which boat? Nothing to do.\n", id);
             sem_post(&sem_end_cargo[id]);
-            sem_wait(&sem_start_cargo[id]);
             continue;
         }
         
         /* ~~~~~ start critical area for unloading/loading ~~~~~~ */
-        pthread_mutex_lock(&mutex);
+        pthread_mutex_lock(&mutex_cargo);
         
         // unload the boat's cargo
         anchorage->cargo_unloaded += boat->cargo;
+        boat->cargo = 0;
 
         // load boat with random cargo, up to full capacity
-        boat->cargo = rand() % BOAT_CARGO_CAPACITY + 1;
-        if (boat->cargo > anchorage->cargo_to_load)
-            boat->cargo = anchorage->cargo_to_load;
-        
-        anchorage->cargo_to_load -= boat->cargo;
-        
+        if (anchorage->cargo_to_load > 0) {
+            boat->cargo = rand() % BOAT_CARGO_CAPACITY + 1;
+            if (boat->cargo > anchorage->cargo_to_load)
+                boat->cargo = anchorage->cargo_to_load;
+            
+            anchorage->cargo_to_load -= boat->cargo;
+        }
         printf(" [A%d] just unloaded [B%02d] and loaded %d more units.\n", id, boat->id, boat->cargo);
 
-        pthread_mutex_unlock(&mutex);
+        pthread_mutex_unlock(&mutex_cargo);
         /* ~~~~~ end critical area for unloading/loading ~~~~~~ */
 
         sem_post(&sem_end_cargo[id]);
-        sem_wait(&sem_start_cargo[id]);
     }
     
     return NULL;
@@ -311,7 +327,7 @@ int enter_anchorage(int anchorage_id, boat_t *boat)
 /**
  * Wait for crane to be available and set boat to it.
  */
-int wait_for_crane(int anchorage_id, boat_t *boat)
+void wait_for_crane(int anchorage_id, boat_t *boat)
 {
     sem_wait(&sem_crane[anchorage_id]);
 
@@ -355,6 +371,4 @@ void sail(int boat_id)
     printf("[B%02d] will sail for %d secs.\n", sail_time);
     sleep(sail_time);
 }
-
-
 
