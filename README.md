@@ -20,4 +20,4 @@ The dock closes when there is no more cargo in the anchorages to load to boats, 
 
 ## Report
 
-The report was written in portuguese, using LaTeX. There should be available a pdf version in the [downloads page](https://github.com/helderco/dh-auto-backup/downloads), though.
+The report was written in portuguese, using LaTeX. There should be available a pdf version in the [downloads page](https://github.com/helderco/dock/downloads), though.
