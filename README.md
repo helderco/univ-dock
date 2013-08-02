@@ -18,6 +18,6 @@ The dock closes when there is no more cargo in the anchorages to load to boats, 
 
     gcc -lpthread -o dock dock.c
 
-## Report
+## Enunciado & Relatório (portuguese)
 
-The report was written in portuguese, using LaTeX. There should be available a pdf version in the [downloads page](https://github.com/helderco/dock/downloads), though.
+Disponível em `docs` o [enunciado](docs/Projecto_C.pdf) e [relatório](docs/relatorio.pdf).
